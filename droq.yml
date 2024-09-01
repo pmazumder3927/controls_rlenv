@@ -1,0 +1,14 @@
+TrajectoryEnv:
+  n_timesteps: !!float 1e6
+  policy: "MlpPolicy"
+  learning_starts: 10000
+  gradient_steps: 20
+  policy_delay: 20
+  policy_kwargs: "dict(dropout_rate=0.01, layer_norm=True)"
+HalfCheetah-v4:
+  n_timesteps: !!float 1e6
+  policy: "MlpPolicy"
+  learning_starts: 10000
+  gradient_steps: 20
+  policy_delay: 20
+  policy_kwargs: "dict(dropout_rate=0.01, layer_norm=True)"
