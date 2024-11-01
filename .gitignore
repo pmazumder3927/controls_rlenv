@@ -2,3 +2,8 @@
 /data
 /logs
 /__pycache__
+/models
+/ppo_tensorboard
+/wandb
+*.pyc
+/controllers/__pycache__

@@ -11,11 +11,6 @@ import torch
 import time
 
 
-def find_scaling_factor(min_cost, max_cost):
-    scaling_factor = (max_cost - min_cost) / 10
-    return scaling_factor
-
-
 class TrajectoryEnv(gymnasium.Env):
     def __init__(self, future_trajectory_length=49, file_number=0):
         super(TrajectoryEnv, self).__init__()
@@ -26,12 +21,14 @@ class TrajectoryEnv(gymnasium.Env):
             shape=(4,),
             dtype=np.float32
         )
-        self.action_space_min = np.array([0, 0, -10, 0])
-        self.action_space_max = np.array([10, 1, 10, 1])
+        self.action_space_min = np.array(
+            [0.3 - 10, 0.05 - 1, -0.1 - 10, 0 - 1])
+        self.action_space_max = np.array(
+            [0.3 + 10, 0.05 + 1, -0.1 + 10, 0 + 1])
 
         self.feature_scales = [0.02337214, 0.05447264,
                                0.31470417, 0.11180328, 0.11180328]
-        self.feature_mins = [-9.62861519e-50,  7.00576470e-01,
+        self.feature_mins = [0,  7.00576470e-01,
                              5.00282936e-01,  5.59016393e-01, 5.59016393e-01]
 
         self.observation_space = spaces.Box(
@@ -43,9 +40,6 @@ class TrajectoryEnv(gymnasium.Env):
 
         self.controller = Controller()
 
-        self.min_cost = 1000
-        self.max_cost = 10000
-        self.scaling_factor = find_scaling_factor(self.min_cost, self.max_cost)
         self.output_history = []
 
         self.state = None
@@ -84,7 +78,9 @@ class TrajectoryEnv(gymnasium.Env):
         return target_lataccel, current_lataccel, state, futureplan
 
     def reset(self, seed=None, options=None):
-        self.sim.reset()
+        file_number = np.random.randint(0, 19999)
+        self.sim = generate_rollout(
+            f'./data/{file_number:05d}.csv', './models/tinyphysics.onnx', debug=False)
         self.sim_state = self.sim.pre_step()
         target_lataccel, current_lataccel, state, futureplan = self.sim_state
         self.state = self.convert_sim_state_to_obs(
@@ -93,10 +89,31 @@ class TrajectoryEnv(gymnasium.Env):
         self.target_lataccel_history.clear()
         self.params_history.clear()
         self.output_history.clear()
-        self.min_cost = 1000
-        self.max_cost = 10000
-        self.scaling_factor = find_scaling_factor(self.min_cost, self.max_cost)
+
+        # Initialize the controller with default action (e.g., zeros)
+        default_action = np.zeros(self.action_space.shape)
+        self.controller.update_params(default_action)
+
+        # Simulate first 100 steps internally
+        for _ in range(100):
+            # Update the controller and simulate one step
+            controller_output = self.controller.update(
+                target_lataccel, current_lataccel, state, futureplan)
+            cost = self.sim.step(controller_output)
+
+            # Advance to the next state
+            self.sim_state = self.sim.pre_step()
+            target_lataccel, current_lataccel, state, futureplan = self.sim_state
+
+            # Optionally, you can collect data here if needed for internal purposes
+            # but do not expose it to the agent
+
+        # After simulating 50 steps, update the state to be returned to the agent
+        self.state = self.convert_sim_state_to_obs(
+            target_lataccel, current_lataccel, state, futureplan)
+
         return self.state, {}
+
 
     def step(self, action):
         # v_x0, alpha_0, K_alpha, K_p, K_d = action
@@ -144,18 +161,66 @@ class TrajectoryEnv(gymnasium.Env):
         plt.close()
         return plt.gcf()
 
-    def render(self):
+    def render(self, mode='rgb_array'):
         return self.plot_and_log_lataccel_history()
 
     def _compute_reward(self, cost, control_input, target_lataccel, current_lataccel):
-        self.scaling_factor = find_scaling_factor(self.min_cost, self.max_cost)
-        total_cost = cost[0]['total_cost']
-        scaled_cost = -2 / (1 + np.exp(-total_cost / self.scaling_factor)) + 1
+        # Instantaneous error
+        error = current_lataccel - target_lataccel
 
-        # error = np.abs(target_lataccel - current_lataccel)
-        # control_penalty = np.sum(np.square(control_input))
-# reward = -scaled_cost - 0.01 * control_penalty - 0.1 * error
-        reward = scaled_cost
+        # Penalize squared error
+        error_penalty = error ** 2
+
+        # Compute derivative of error
+        if hasattr(self, 'previous_error'):
+            error_derivative = error - self.previous_error
+        else:
+            error_derivative = 0
+        self.previous_error = error
+
+        # Penalize squared derivative of error
+        error_derivative_penalty = error_derivative ** 2
+        # Penalize magnitude of control input (to minimize control effort)
+        control_effort_penalty = np.sum(control_input ** 2)
+
+        # Penalize rate of change in control input
+        if hasattr(self, 'previous_control_input'):
+            delta_u = control_input - self.previous_control_input
+        else:
+            delta_u = np.zeros_like(control_input)
+        self.previous_control_input = control_input
+
+        control_smoothness_penalty = np.sum(delta_u ** 2)
+        # Penalize lag (positive error derivative when setpoint is increasing)
+        setpoint_derivative = target_lataccel - self.previous_target_lataccel if hasattr(self, 'previous_target_lataccel') else 0
+        self.previous_target_lataccel = target_lataccel
+
+        lag_penalty = 0
+        if setpoint_derivative != 0:
+            # If setpoint is increasing and error is positive (lagging), penalize
+            if setpoint_derivative > 0 and error > 0:
+                lag_penalty = error ** 2
+            # If setpoint is decreasing and error is negative (lagging), penalize
+            elif setpoint_derivative < 0 and error < 0:
+                lag_penalty = error ** 2
+            # Weighting factors for each penalty
+        w_error = 1.0
+        w_error_derivative = 0.5
+        w_control_effort = 0.01
+        w_control_smoothness = 0.1
+        w_lag = 0.5
+
+        # Total penalty
+        total_penalty = (
+            w_error * error_penalty +
+            w_error_derivative * error_derivative_penalty +
+            w_control_effort * control_effort_penalty +
+            w_control_smoothness * control_smoothness_penalty +
+            w_lag * lag_penalty
+        )
+
+        # Reward is negative total penalty
+        reward = -total_penalty
         return reward
 
     def seed(self, seed=None):

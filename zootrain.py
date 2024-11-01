@@ -10,7 +10,6 @@ rl_zoo3.ALGOS["dqn"] = DQN
 # See note below to use DroQ configuration
 # rl_zoo3.ALGOS["droq"] = DroQ
 rl_zoo3.ALGOS["sac"] = SAC
-rl_zoo3.ALGOS["ppo"] = PPO
 rl_zoo3.ALGOS["td3"] = TD3
 rl_zoo3.ALGOS["tqc"] = TQC
 rl_zoo3.ALGOS["crossq"] = CrossQ

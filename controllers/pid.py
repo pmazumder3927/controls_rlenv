@@ -17,6 +17,7 @@ class Controller(BaseController):
         self.p = params[0]
         self.i = params[1]
         self.d = params[2]
+        # does nothing for now
         self.bias = params[3]
         self.error_integral = 0
         self.prev_error = 0
@@ -50,7 +51,7 @@ class Controller(BaseController):
         self.prev_error = error
         # simple pid
         pid = self.p * error + self.i * self.error_integral + \
-            self.d * error_diff + self.bias
+            self.d * error_diff
         return pid
 
         # # log last state and current lat accel
